@@ -10,30 +10,48 @@ db.exec(`
     id INTEGER PRIMARY KEY,
     text TEXT NOT NULL,
     done INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    group_name TEXT
   )
 `)
+
+// Migration: add group_name to existing databases
+try {
+  db.exec('ALTER TABLE todos ADD COLUMN group_name TEXT')
+} catch {}
 
 const app = express()
 app.use(cors())
 app.use(express.json())
 
 app.get('/api/todos', (req, res) => {
-  const todos = db.prepare('SELECT id, text, done, created_at as createdAt FROM todos ORDER BY created_at ASC').all()
-  res.json(todos.map(t => ({ ...t, done: !!t.done })))
+  const todos = db.prepare(
+    'SELECT id, text, done, created_at as createdAt, group_name as "group" FROM todos ORDER BY created_at ASC'
+  ).all()
+  res.json(todos.map(t => ({ ...t, done: !!t.done, group: t.group || null })))
 })
 
 app.post('/api/todos', (req, res) => {
-  const { text } = req.body
+  const { text, group } = req.body
   if (!text?.trim()) return res.status(400).json({ error: 'Text required' })
   const createdAt = Date.now()
-  const result = db.prepare('INSERT INTO todos (text, done, created_at) VALUES (?, 0, ?)').run(text.trim(), createdAt)
-  res.json({ id: result.lastInsertRowid, text: text.trim(), done: false, createdAt })
+  const groupName = group?.trim() || null
+  const result = db.prepare(
+    'INSERT INTO todos (text, done, created_at, group_name) VALUES (?, 0, ?, ?)'
+  ).run(text.trim(), createdAt, groupName)
+  res.json({ id: result.lastInsertRowid, text: text.trim(), done: false, createdAt, group: groupName })
 })
 
 app.patch('/api/todos/:id', (req, res) => {
-  const { done } = req.body
-  db.prepare('UPDATE todos SET done = ? WHERE id = ?').run(done ? 1 : 0, req.params.id)
+  const { done, group } = req.body
+  const { id } = req.params
+  if (typeof done !== 'undefined' && 'group' in req.body) {
+    db.prepare('UPDATE todos SET done = ?, group_name = ? WHERE id = ?').run(done ? 1 : 0, group || null, id)
+  } else if (typeof done !== 'undefined') {
+    db.prepare('UPDATE todos SET done = ? WHERE id = ?').run(done ? 1 : 0, id)
+  } else if ('group' in req.body) {
+    db.prepare('UPDATE todos SET group_name = ? WHERE id = ?').run(group || null, id)
+  }
   res.json({ ok: true })
 })
 

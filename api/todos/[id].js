@@ -6,8 +6,14 @@ export default async function handler(req, res) {
   const { id } = req.query
 
   if (req.method === 'PATCH') {
-    const { done } = req.body
-    await sql`UPDATE todos SET done = ${done} WHERE id = ${id}`
+    const { done, group } = req.body
+    if (typeof done !== 'undefined' && 'group' in req.body) {
+      await sql`UPDATE todos SET done = ${done}, group_name = ${group} WHERE id = ${id}`
+    } else if (typeof done !== 'undefined') {
+      await sql`UPDATE todos SET done = ${done} WHERE id = ${id}`
+    } else if ('group' in req.body) {
+      await sql`UPDATE todos SET group_name = ${group} WHERE id = ${id}`
+    }
     return res.json({ ok: true })
   }
 

@@ -16,7 +16,10 @@ export async function initDb() {
       id SERIAL PRIMARY KEY,
       text TEXT NOT NULL,
       done BOOLEAN NOT NULL DEFAULT false,
-      created_at BIGINT NOT NULL
+      created_at BIGINT NOT NULL,
+      group_name TEXT
     )
   `
+  // Migration: add group_name to existing tables that predate this column
+  await sql`ALTER TABLE todos ADD COLUMN IF NOT EXISTS group_name TEXT`
 }

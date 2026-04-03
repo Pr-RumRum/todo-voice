@@ -53,6 +53,12 @@ const BackspaceIcon = () => (
   </svg>
 )
 
+const ChevronIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="6 9 12 15 18 9" />
+  </svg>
+)
+
 // ── Speech Recognition Hook ────────────────────────────────────────────────
 
 function useSpeechRecognition(onResult) {
@@ -60,6 +66,8 @@ function useSpeechRecognition(onResult) {
   const [interimTranscript, setInterimTranscript] = useState('')
   const recognitionRef = useRef(null)
   const onResultRef = useRef(onResult)
+  const lastTranscriptRef = useRef('')
+  const gotFinalRef = useRef(false)
 
   useEffect(() => {
     onResultRef.current = onResult
@@ -82,8 +90,11 @@ function useSpeechRecognition(onResult) {
         if (r.isFinal) final += r[0].transcript
         else interim += r[0].transcript
       }
-      setInterimTranscript(final || interim)
+      const text = final || interim
+      setInterimTranscript(text)
+      lastTranscriptRef.current = text
       if (final) {
+        gotFinalRef.current = true
         onResultRef.current(final.trim())
       }
     }
@@ -94,11 +105,20 @@ function useSpeechRecognition(onResult) {
 
     recognition.onerror = (event) => {
       console.error('Speech recognition error:', event.error)
+      lastTranscriptRef.current = ''
+      gotFinalRef.current = false
       setInterimTranscript('')
       setListening(false)
     }
 
+    // Fix: if the browser ends without ever firing isFinal (common on mobile),
+    // submit whatever interim transcript we captured
     recognition.onend = () => {
+      if (!gotFinalRef.current && lastTranscriptRef.current.trim()) {
+        onResultRef.current(lastTranscriptRef.current.trim())
+      }
+      lastTranscriptRef.current = ''
+      gotFinalRef.current = false
       setInterimTranscript('')
       setListening(false)
     }
@@ -116,6 +136,8 @@ function useSpeechRecognition(onResult) {
 
   const start = useCallback(() => {
     if (!recognitionRef.current || listening) return
+    gotFinalRef.current = false
+    lastTranscriptRef.current = ''
     try {
       recognitionRef.current.start()
       setListening(true)
@@ -259,7 +281,6 @@ function LockScreen({ onUnlock }) {
 
 function formatTime(ts) {
   if (!ts) return ''
-  // Neon returns BIGINT columns as strings; coerce to number before constructing Date
   const d = new Date(Number(ts))
   if (isNaN(d.getTime())) return ''
   const now = new Date()
@@ -278,7 +299,9 @@ function App() {
   const [filter, setFilter] = useState('all')
   const [voiceText, setVoiceText] = useState('')
   const [removing, setRemoving] = useState(new Set())
-  const inputRef = useRef(null)
+  const [collapsed, setCollapsed] = useState(new Set())
+  const [editingGroup, setEditingGroup] = useState(null)
+  const titleRef = useRef(null)
 
   const lock = useCallback(() => {
     sessionStorage.removeItem(SESSION_KEY)
@@ -293,6 +316,13 @@ function App() {
     if (locked) return
     fetch(API).then(r => r.json()).then(setTodos)
   }, [locked])
+
+  // Set contentEditable title on mount
+  useEffect(() => {
+    if (titleRef.current) {
+      titleRef.current.textContent = title
+    }
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (voiceText) {
@@ -325,10 +355,11 @@ function App() {
     })
   }, [todos])
 
+  // Fix: fire DELETE request immediately (before animation) so it always persists
   const deleteTodo = useCallback((id) => {
+    fetch(`${API}/${id}`, { method: 'DELETE' })
     setRemoving(prev => new Set(prev).add(id))
-    setTimeout(async () => {
-      await fetch(`${API}/${id}`, { method: 'DELETE' })
+    setTimeout(() => {
       setTodos(prev => prev.filter(t => String(t.id) !== String(id)))
       setRemoving(prev => { const next = new Set(prev); next.delete(id); return next })
     }, 280)
@@ -337,6 +368,25 @@ function App() {
   const clearCompleted = useCallback(async () => {
     await fetch(API, { method: 'DELETE' })
     setTodos(prev => prev.filter(t => !t.done))
+  }, [])
+
+  const updateGroup = useCallback(async (id, group) => {
+    const g = group?.trim() || null
+    setTodos(prev => prev.map(t => String(t.id) === String(id) ? { ...t, group: g } : t))
+    await fetch(`${API}/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ group: g }),
+    })
+  }, [])
+
+  const toggleCollapse = useCallback((groupName) => {
+    setCollapsed(prev => {
+      const next = new Set(prev)
+      if (next.has(groupName)) next.delete(groupName)
+      else next.add(groupName)
+      return next
+    })
   }, [])
 
   const handleVoice = useCallback((transcript) => {
@@ -413,22 +463,99 @@ function App() {
     return true
   })
 
+  // Group todos: named groups alphabetically, then ungrouped
+  const namedGroups = {}
+  const ungroupedTodos = []
+  filtered.forEach(todo => {
+    if (todo.group) {
+      if (!namedGroups[todo.group]) namedGroups[todo.group] = []
+      namedGroups[todo.group].push(todo)
+    } else {
+      ungroupedTodos.push(todo)
+    }
+  })
+  const sortedGroupNames = Object.keys(namedGroups).sort()
+
   const remaining = todos.filter(t => !t.done).length
   const completedCount = todos.filter(t => t.done).length
+
+  const renderTodoItem = (todo) => (
+    <div key={todo.id} className={`todo-item ${removing.has(todo.id) ? 'removing' : ''}`}>
+      <div
+        className={`checkbox ${todo.done ? 'checked' : ''}`}
+        onClick={() => toggleTodo(todo.id)}
+        role="checkbox"
+        aria-checked={todo.done}
+        tabIndex={0}
+        onKeyDown={e => e.key === 'Enter' && toggleTodo(todo.id)}
+      >
+        <CheckIcon />
+      </div>
+      <div className="todo-content">
+        <span className={`todo-text ${todo.done ? 'completed' : ''}`}>
+          {todo.text}
+        </span>
+        <div className="todo-meta">
+          <span className="todo-time">{formatTime(todo.createdAt)}</span>
+          {editingGroup === todo.id ? (
+            <input
+              className="group-edit"
+              defaultValue={todo.group || ''}
+              placeholder="Label…"
+              autoFocus
+              onClick={e => e.stopPropagation()}
+              onBlur={e => { updateGroup(todo.id, e.target.value); setEditingGroup(null) }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+                if (e.key === 'Escape') setEditingGroup(null)
+              }}
+            />
+          ) : (
+            <span
+              className={`group-pill${todo.group ? ' has-label' : ''}`}
+              onClick={() => setEditingGroup(todo.id)}
+            >
+              {todo.group || '+ label'}
+            </span>
+          )}
+        </div>
+      </div>
+      <button className="delete-btn" onClick={() => deleteTodo(todo.id)} aria-label="Delete task">
+        <XIcon />
+      </button>
+    </div>
+  )
 
   if (locked) return <LockScreen onUnlock={unlock} />
 
   return (
     <div className="app">
       <header className="header">
-        <input
+        <div
+          ref={titleRef}
           className="title-input"
-          value={title}
-          onChange={e => {
-            setTitle(e.target.value)
-            localStorage.setItem('todo-title', e.target.value)
+          contentEditable
+          suppressContentEditableWarning
+          onInput={e => {
+            const val = e.currentTarget.textContent || ''
+            setTitle(val)
+            localStorage.setItem('todo-title', val)
           }}
-          onKeyDown={e => e.key === 'Enter' && e.currentTarget.blur()}
+          onKeyDown={e => {
+            if (e.key === 'Enter') {
+              e.preventDefault()
+              e.currentTarget.blur()
+            }
+          }}
+          onPaste={e => {
+            e.preventDefault()
+            const text = e.clipboardData.getData('text/plain')
+            document.execCommand('insertText', false, text)
+          }}
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
+          data-gramm="false"
           aria-label="List title"
         />
         <p>{remaining} remaining</p>
@@ -437,7 +564,6 @@ function App() {
       <div className="input-area">
         <form className="input-row" onSubmit={handleSubmit}>
           <input
-            ref={inputRef}
             type="text"
             value={listening ? interimTranscript : input}
             onChange={e => { if (!listening) setInput(e.target.value) }}
@@ -495,29 +621,35 @@ function App() {
             <p>No {filter} tasks.</p>
           </div>
         )}
-        {filtered.map(todo => (
-          <div key={todo.id} className={`todo-item ${removing.has(todo.id) ? 'removing' : ''}`}>
-            <div
-              className={`checkbox ${todo.done ? 'checked' : ''}`}
-              onClick={() => toggleTodo(todo.id)}
-              role="checkbox"
-              aria-checked={todo.done}
-              tabIndex={0}
-              onKeyDown={e => e.key === 'Enter' && toggleTodo(todo.id)}
-            >
-              <CheckIcon />
+
+        {/* Named groups */}
+        {sortedGroupNames.map(groupName => {
+          const isCollapsed = collapsed.has(groupName)
+          const groupTodos = namedGroups[groupName]
+          return (
+            <div key={groupName} className="group-section">
+              <button
+                className={`group-header${isCollapsed ? ' collapsed' : ''}`}
+                onClick={() => toggleCollapse(groupName)}
+                aria-expanded={!isCollapsed}
+              >
+                <span className="group-chevron">
+                  <ChevronIcon />
+                </span>
+                <span className="group-label">{groupName}</span>
+                <span className="group-count">{groupTodos.length}</span>
+              </button>
+              {!isCollapsed && (
+                <div className="group-items">
+                  {groupTodos.map(renderTodoItem)}
+                </div>
+              )}
             </div>
-            <div className="todo-content">
-              <span className={`todo-text ${todo.done ? 'completed' : ''}`}>
-                {todo.text}
-              </span>
-              <span className="todo-time">{formatTime(todo.createdAt)}</span>
-            </div>
-            <button className="delete-btn" onClick={() => deleteTodo(todo.id)} aria-label="Delete task">
-              <XIcon />
-            </button>
-          </div>
-        ))}
+          )
+        })}
+
+        {/* Ungrouped tasks */}
+        {ungroupedTodos.map(renderTodoItem)}
       </div>
 
       {todos.length > 0 && (
