@@ -355,14 +355,24 @@ function App() {
     })
   }, [todos])
 
-  // Fix: fire DELETE request immediately (before animation) so it always persists
-  const deleteTodo = useCallback((id) => {
-    fetch(`${API}/${id}`, { method: 'DELETE' })
+  const deleteTodo = useCallback(async (id) => {
+    // Start the slide-out animation immediately (optimistic)
     setRemoving(prev => new Set(prev).add(id))
-    setTimeout(() => {
+    try {
+      const res = await fetch(`${API}/${id}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(`DELETE ${id} → ${res.status}: ${body.error || 'unknown'}`)
+      }
+      // Let animation finish before removing from DOM
+      await new Promise(r => setTimeout(r, 280))
       setTodos(prev => prev.filter(t => String(t.id) !== String(id)))
+    } catch (err) {
+      console.error('Delete failed, rolling back:', err)
+      // finally will remove the 'removing' class so the item reappears
+    } finally {
       setRemoving(prev => { const next = new Set(prev); next.delete(id); return next })
-    }, 280)
+    }
   }, [])
 
   const clearCompleted = useCallback(async () => {

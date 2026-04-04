@@ -1,6 +1,7 @@
 import { neon } from '@neondatabase/serverless'
 
 let sql
+let initialized = false
 
 export function getDb() {
   if (!sql) {
@@ -10,8 +11,10 @@ export function getDb() {
 }
 
 export async function initDb() {
-  const sql = getDb()
-  await sql`
+  // Only run DDL once per function instance (warm-start safe)
+  if (initialized) return
+  const db = getDb()
+  await db`
     CREATE TABLE IF NOT EXISTS todos (
       id SERIAL PRIMARY KEY,
       text TEXT NOT NULL,
@@ -20,6 +23,9 @@ export async function initDb() {
       group_name TEXT
     )
   `
-  // Migration: add group_name to existing tables that predate this column
-  await sql`ALTER TABLE todos ADD COLUMN IF NOT EXISTS group_name TEXT`
+  // Idempotent migration for pre-existing tables
+  try {
+    await db`ALTER TABLE todos ADD COLUMN IF NOT EXISTS group_name TEXT`
+  } catch {}
+  initialized = true
 }
